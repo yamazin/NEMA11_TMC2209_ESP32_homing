@@ -1,0 +1,55 @@
+// =============================================
+// TMC2209 UARTテスト専用コード
+// main.cpp と入れ替えて使用してください
+// =============================================
+#include <Arduino.h>
+#include <TMCStepper.h>
+
+#define UART_RX     16
+#define UART_TX     17
+#define R_SENSE     0.11f
+#define DRIVER_ADDRESS 0b00
+
+HardwareSerial TMCSerial(2);
+TMC2209Stepper driver(&TMCSerial, R_SENSE, DRIVER_ADDRESS);
+
+void testUART() {
+    Serial.println("\n--- UART通信テスト ---");
+
+    uint8_t conn = driver.test_connection();
+    Serial.printf("test_connection : %s (code=%d)\n", conn == 0 ? "OK" : "NG", conn);
+    Serial.printf("version         : 0x%02X (期待値: 0x21)\n", driver.version());
+    Serial.printf("IOIN            : 0x%08X\n", driver.IOIN());
+
+    if (conn == 0) {
+        Serial.println(">>> UART通信 成功! <<<");
+        Serial.printf("GCONF           : 0x%08X\n", driver.GCONF());
+        Serial.printf("CHOPCONF        : 0x%08X\n", driver.CHOPCONF());
+        Serial.printf("DRV_STATUS      : 0x%08X\n", driver.DRV_STATUS());
+    } else {
+        Serial.println(">>> UART通信 失敗 <<<");
+        Serial.println("配線を確認してください:");
+        Serial.printf("  ESP32 TX=GPIO%d --[1kΩ]--> USART/PDN_UART\n", UART_TX);
+        Serial.printf("  ESP32 RX=GPIO%d ---------- USART/PDN_UART\n", UART_RX);
+    }
+    Serial.println("----------------------");
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(500);
+    Serial.println("=== TMC2209 UARTテスト ===");
+    Serial.printf("TX=GPIO%d  RX=GPIO%d  Baud=115200\n", UART_TX, UART_RX);
+
+    TMCSerial.begin(115200, SERIAL_8N1, UART_RX, UART_TX);
+    driver.begin();
+    delay(200);
+
+    testUART();
+}
+
+void loop() {
+    // 3秒ごとに再テスト
+    delay(3000);
+    testUART();
+}
