@@ -32,10 +32,11 @@
 #define HOMING_WATCHDOG_SPEED_RATIO 0.95f
 #define HOMING_STALL_TIMEOUT_MS 2000       // 監視開始後この時間内にストール確定しなければ異常停止
 #define HOMING_BACKOFF  10      // ストール後に引き戻すステップ数
-#define MARGIN_STEPS    10      // 端からの安全マージン [steps]
+#define MARGIN_STEPS    50      // 端からの安全マージン [steps]
 #define PERIOD_MS       4000    // 往復周期 [ms]（片道2秒）※速度計算用に残す
 #define NUM_SECTIONS    6       // 動作範囲の区画数
 #define MOVE_INTERVAL   1000    // ランダム移動間隔 [ms]
+#define SINE_PERIOD_MS  4500    // 正弦波往復モードの周期 [ms]（円運動の投影）
 
 // StallGuard感度 (0–255): 値が大きいほど敏感
 // フリー走行時SG>100、壁ストール時SG<100 となる値
@@ -243,6 +244,41 @@ void homing() {
     homingDone = true;
 }
 
+// =============================================
+// 動作モード（ホーミング完了後に1回だけ抽選する）
+// =============================================
+enum MotionMode { MODE_RANDOM, MODE_SINE };
+MotionMode motionMode = MODE_RANDOM;
+
+float sineCenter = 0;
+float sineAmplitude = 0;
+unsigned long sineStartTime = 0;
+
+// 正弦波往復（円運動の投影）の初期化。速度・加速度上限は正弦波の理論最大値に余裕を持たせて設定する
+void startSineMotion() {
+    long travelSteps = rightEnd - 2 * MARGIN_STEPS;
+    sineAmplitude = travelSteps / 2.0f;
+    sineCenter = MARGIN_STEPS + sineAmplitude;
+    sineStartTime = millis();
+
+    float omega = 2.0f * PI / (SINE_PERIOD_MS / 1000.0f);
+    float sineMaxSpeed = sineAmplitude * omega * 1.3f;         // 理論最大速度に30%余裕
+    float sineMaxAccel = sineAmplitude * omega * omega * 1.3f; // 理論最大加速度に30%余裕
+    stepper.setMaxSpeed(sineMaxSpeed);
+    stepper.setAcceleration(sineMaxAccel);
+
+    Serial.printf("動作モード: 正弦波往復 / 周期%dms / 中心%.0f / 振幅%.0f / 速度上限%.0f / 加速度上限%.0f\n",
+                  SINE_PERIOD_MS, sineCenter, sineAmplitude, sineMaxSpeed, sineMaxAccel);
+}
+
+// 毎ループ呼び出し、現在時刻に応じた正弦波上の目標位置を追従させる
+void sineMotionUpdate() {
+    float t = (millis() - sineStartTime) / 1000.0f;
+    float omega = 2.0f * PI / (SINE_PERIOD_MS / 1000.0f);
+    long target = sineCenter + (long)(sineAmplitude * sinf(omega * t));
+    stepper.moveTo(target);
+}
+
 // 前方宣言
 void initSections();
 
@@ -310,7 +346,15 @@ void setup() {
     Serial.printf("通常動作設定: 1/%d マイクロステップ / 可動域: 0〜%ld steps / 速度: %.0f steps/sec / 加速度: %.0f steps/sec²\n",
                   RUN_MICROSTEPS, rightEnd, runSpeed, runAccel);
 
-    initSections();
+    // ホーミング完了後、動作モードを1回だけ抽選する
+    randomSeed(esp_random());
+    motionMode = (random(2) == 0) ? MODE_RANDOM : MODE_SINE;
+    if (motionMode == MODE_SINE) {
+        startSineMotion();
+    } else {
+        Serial.println("動作モード: ランダム区画移動");
+        initSections();
+    }
 }
 
 // =============================================
@@ -336,6 +380,11 @@ void loop() {
     if (!homingDone) return;
 
     stepper.run();
+
+    if (motionMode == MODE_SINE) {
+        sineMotionUpdate();
+        return;
+    }
 
     unsigned long now = millis();
     if (now - lastMoveTime >= MOVE_INTERVAL) {
